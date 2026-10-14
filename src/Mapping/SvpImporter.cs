@@ -115,7 +115,7 @@ public sealed class SvpImporter
         };
 
         var properties = ImportVoiceIdentity(track, owner);
-        var notes = ExpandNotes(track, owner);
+        var notes = ApplyRestAndBreathRules(ExpandNotes(track, owner), owner);
         foreach (var note in notes)
             part.Notes.Add(ImportNote(note, track, owner));
 
@@ -334,6 +334,93 @@ public sealed class SvpImporter
             info.Properties = new PropertyObject(props);
         return info;
     }
+
+    // ── 休止符 / 呼吸音 ──
+
+    /// 32 tick 是「贴尾短休止」的判据阈值：PPQ 480 下约 15 ms，即一个短促换气的量级。
+    /// 语料里 `br` 时长中位 240 tick，≤32 tick 只占 1% —— 所以这条规则只在「换气紧贴前一音
+    /// 符尾巴」时留下它，其余整颗移除，避免 TuneLab 的自动切片把长 br 切成独立片段。
+    const double BrTailMaxTicks = 32.0;
+
+    /// 处理 `br`（休止）与头部 `'`（呼吸音），返回真正要变成音符的序列。
+    ///
+    /// 语料实测：624 颗 `br`、86 个 `'…` 呼吸音；`br` 起点与前一音符末端的 gap 有 60% ≤0.5 tick，
+    /// 末端到下一音符**从不**紧贴（中位 240 tick）。故「两端接近」这一条实际上只由前端决定，
+    /// 末端那一侧仍按同一阈值判（对称、实现简单），语料上不会因此额外保留任何 `br`。
+    List<SvpNote> ApplyRestAndBreathRules(List<SvpNote> notes, string owner)
+    {
+        int breathMarks = 0;
+        foreach (var note in notes)
+        {
+            if (note.Lyrics.Length == 0 || note.Lyrics[0] != '\'') continue;
+            int start = 0;
+            while (start < note.Lyrics.Length && note.Lyrics[start] == '\'') start++;
+            note.Lyrics = note.Lyrics[start..];
+            breathMarks++;
+        }
+        if (breathMarks > 0)
+            _report.Degrade("呼吸音", owner, breathMarks, "歌词头部的单引号已去掉（呼吸音暂不支持）");
+
+        if (!notes.Any(n => n.Lyrics == "br")) return notes;
+
+        var output = new List<SvpNote>(notes.Count);
+        int kept = 0, dropped = 0;
+        for (int i = 0; i < notes.Count; i++)
+        {
+            var note = notes[i];
+            if (note.Lyrics != "br")
+            {
+                output.Add(note);
+                continue;
+            }
+
+            // 前一颗「真实」音符（跳过连续的 br）。
+            var previous = output.LastOrDefault();
+            double gapToPrevious = previous is null ? double.MaxValue
+                : TempoMap.BlickToTick(note.Onset - previous.End);
+            double duration = TempoMap.BlickToTick(note.Duration);
+
+            if (previous is not null && gapToPrevious <= BrTailMaxTicks && duration <= BrTailMaxTicks)
+            {
+                // 保留为一颗静音音符：歌词带 `.` 音素锁定标记，音素固定 `sil`，
+                // 音高沿用前一音符（静音音符不参与发音，音高只影响曲线连续性）。
+                var silence = Clone(note);
+                silence.Lyrics = ".sil";
+                silence.Phonemes = "sil";
+                silence.Attributes = new SvpNoteAttributes { EvenSyllableDuration = true };
+                silence.SystemAttributes = new SvpNoteAttributes { EvenSyllableDuration = true };
+                silence.Pitch = previous.Pitch;
+                output.Add(silence);
+                kept++;
+            }
+            else
+            {
+                dropped++;
+            }
+        }
+
+        _report.Degrade("休止符", owner, kept + dropped,
+            $"{kept + dropped} 颗 br：{kept} 颗贴在前一音符尾部（≤{BrTailMaxTicks:0} tick）保留成 .sil 静音音符，"
+            + $"{dropped} 颗整颗移除（长的 br 会被 TuneLab 的自动切片切成独立片段）");
+        return output;
+    }
+
+    static SvpNote Clone(SvpNote note) => new()
+    {
+        MusicalType = note.MusicalType,
+        Onset = note.Onset,
+        Duration = note.Duration,
+        Lyrics = note.Lyrics,
+        Phonemes = note.Phonemes,
+        Accent = note.Accent,
+        Pitch = note.Pitch,
+        Detune = note.Detune,
+        InstantMode = note.InstantMode,
+        Attributes = note.Attributes,
+        SystemAttributes = note.SystemAttributes,
+        PitchTakes = note.PitchTakes,
+        TimbreTakes = note.TimbreTakes,
+    };
 
     // ── 音色参数曲线 ──
 
