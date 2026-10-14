@@ -24,14 +24,6 @@ BPM 折算，跨变速点的位置由 tempo 表分段积分。
 | `notes[].phonemes` / `languageOverride` + `phonesetOverride` / rap 的 `accent`、`rTone`、`rIntonation` | 音符属性：显式音素、语言覆盖、音乐类型、声调、说唱音高与音准 |
 | `mainRef.database.{name,version,language}` | 声源身份（Type = 目标插件注册的引擎 id，Id = 由库名 + 版本 + 语言算出的声库身份键）；原始三元组另存 part 私有属性 `svp_identity` 供导出回填 |
 
-## 导入时的歌词规则
-
-- **`br`（休止）**：整颗移除。TuneLab 的自动切片会把长 `br` 切成独立片段，导入期就清掉。
-  唯一的例外：贴在前一音符尾部的短休止——`br` 起点与前一音符末端的间隔 ≤32 tick 且自身时长
-  ≤32 tick 时，保留为一颗静音音符，歌词 `.sil` 并以音素锁定指定音素 `sil`（音高沿用前一音符）。
-  语料实测 624 颗 `br` 里只有 8 颗满足该条件，`br` 时长中位 240 tick。
-- **`'`（呼吸音）**：暂不支持，导入时去掉歌词头部的连续单引号（语料 86 处，形如 `'yi`、`'爱`）。
-
 ## 没装目标插件时
 
 导入前按宿主的扩展根目录（`%APPDATA%\TuneLab\Extensions`，可被 `TUNELAB_DATA_DIR` 改指沙盒）
