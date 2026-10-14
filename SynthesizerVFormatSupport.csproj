@@ -4,7 +4,7 @@
        纯 C# 实现，无 C++ / 无原生依赖。AnyCPU。
 
        SDK 引用：仅引用 TuneLab.Foundation + TuneLab.SDK，Private=false（不打进包，宿主提供）。
-       SDKPath 默认指向同级的 TuneLab2 检出；可用 -p:SDKPath=<path> 覆盖。 -->
+       SDK 源码树位置由 TUNELAB_SDK_ROOT / -p:TuneLabSdkRoot 给出，仓库里不写默认路径。 -->
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -22,26 +22,36 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <SDKPath Condition="'$(SDKPath)' == ''">$(MSBuildThisFileDirectory)..\TuneLab2</SDKPath>
+    <!-- TuneLab SDK 源码树位置：环境变量 TUNELAB_SDK_ROOT，或 -p:TuneLabSdkRoot=&lt;路径&gt;。
+         这里**不写默认值** —— 任何默认值都是某台机器的目录布局，不该进版本库（同目录的
+         OpenCyanForTuneLab 也是这条规矩）。MSBuild 把环境变量当全局属性，设好后本行等于透明。 -->
+    <TuneLabSdkRoot Condition="'$(TuneLabSdkRoot)' == ''">$(TUNELAB_SDK_ROOT)</TuneLabSdkRoot>
+    <TuneLabSdkRoot Condition="'$(TuneLabSdkRoot)' != ''">$([MSBuild]::EnsureTrailingSlash('$(TuneLabSdkRoot)'))</TuneLabSdkRoot>
   </PropertyGroup>
+
+  <Target Name="RequireTuneLabSdkRoot" BeforeTargets="ResolveProjectReferences">
+    <Error Condition="'$(TuneLabSdkRoot)' == ''"
+           Text="未指定 TuneLab SDK 源码树位置。设置环境变量 TUNELAB_SDK_ROOT=&lt;TuneLab2 所在目录&gt;，或加 -p:TuneLabSdkRoot=&lt;路径&gt;。" />
+  </Target>
 
   <ItemGroup>
     <Compile Include="src\**\*.cs" />
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="$(SDKPath)\TuneLab.Foundation\TuneLab.Foundation.csproj" Private="false"
-                      Condition="Exists('$(SDKPath)\TuneLab.Foundation\TuneLab.Foundation.csproj')" />
-    <ProjectReference Include="$(SDKPath)\TuneLab.SDK\TuneLab.SDK.csproj" Private="false"
-                      Condition="Exists('$(SDKPath)\TuneLab.SDK\TuneLab.SDK.csproj')" />
+    <!-- 优先用 SDK 源码工程引用（存在时）；否则回退到它已构建好的 DLL。 -->
+    <ProjectReference Include="$(TuneLabSdkRoot)TuneLab.Foundation\TuneLab.Foundation.csproj" Private="false"
+                      Condition="Exists('$(TuneLabSdkRoot)TuneLab.Foundation\TuneLab.Foundation.csproj')" />
+    <ProjectReference Include="$(TuneLabSdkRoot)TuneLab.SDK\TuneLab.SDK.csproj" Private="false"
+                      Condition="Exists('$(TuneLabSdkRoot)TuneLab.SDK\TuneLab.SDK.csproj')" />
 
     <Reference Include="TuneLab.Foundation" Private="false"
-               Condition="!Exists('$(SDKPath)\TuneLab.Foundation\TuneLab.Foundation.csproj')">
-      <HintPath>$(SDKPath)\TuneLab.Foundation\bin\Release\net8.0\TuneLab.Foundation.dll</HintPath>
+               Condition="!Exists('$(TuneLabSdkRoot)TuneLab.Foundation\TuneLab.Foundation.csproj')">
+      <HintPath>$(TuneLabSdkRoot)TuneLab.Foundation\bin\Release\net8.0\TuneLab.Foundation.dll</HintPath>
     </Reference>
     <Reference Include="TuneLab.SDK" Private="false"
-               Condition="!Exists('$(SDKPath)\TuneLab.SDK\TuneLab.SDK.csproj')">
-      <HintPath>$(SDKPath)\TuneLab.SDK\bin\Release\net8.0\TuneLab.SDK.dll</HintPath>
+               Condition="!Exists('$(TuneLabSdkRoot)TuneLab.SDK\TuneLab.SDK.csproj')">
+      <HintPath>$(TuneLabSdkRoot)TuneLab.SDK\bin\Release\net8.0\TuneLab.SDK.dll</HintPath>
     </Reference>
   </ItemGroup>
 
