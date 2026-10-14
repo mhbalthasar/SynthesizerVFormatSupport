@@ -20,9 +20,9 @@ public sealed class SvpFormat : IImportFormat, IExportFormat, IExtensionSettings
     {
         var report = new ImportReport();
         var project = SvpReader.Read(stream, report);
-        var (installed, path) = OpenCyanPresence.Detect();
-        if (installed)
-            TuneLabContext.Global.GetLogger().Info($"已检测到 OpenCyan 插件：{path}");
+        // 检测结果不落日志：装了没有、检查过没检查过都是用户环境的隐私细节，
+        // 而且它对本包的正确性没有任何信息量（缺失的后果已经写在下面那条「导入范围」里）。
+        var (installed, _) = OpenCyanPresence.Detect();
         var info = new SvpImporter(project, report, openCyanAvailable: installed).Import();
         report.Log();
         return info;

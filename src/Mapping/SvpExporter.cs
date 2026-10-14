@@ -207,7 +207,7 @@ public sealed class SvpExporter
                     continue;
                 }
 
-                _report.Degrade("未知轨", owner, 1, $"{key}：不是 OpenCyan 声明的轨，曲线未导出");
+                _report.Degrade("未知轨", owner, 1, $"{key}：不是当前声源声明的轨，曲线未导出");
             }
 
             ExportPitchCurve(part, track, parameters, owner);

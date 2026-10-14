@@ -33,9 +33,9 @@ public sealed class SvpImporter
         _tempo = new TempoMap(project.Time.Tempo);
         _openCyan = openCyanAvailable;
         if (!_openCyan)
-            _report.Degrade("未安装 OpenCyan", "工程", 1,
-                "扩展目录里没找到 OpenCyan 歌声插件：本次只导入拍速/拍号/轨道/音符/音高线，"
-                + "音色轨、颤音、声线混合、音素与语言覆盖全部跳过。装上 OpenCyan 后重新导入即可拿全。");
+            _report.Degrade("导入范围", "工程", 1,
+                "本次仅导入拍速 / 拍号 / 轨道 / 音符 / 音高线：音色轨、颤音、音色混合、"
+                + "音素与语言覆盖没有可用的参数通道，已跳过。");
     }
 
     public ProjectInfo Import()
@@ -155,7 +155,7 @@ public sealed class SvpImporter
 
         if (database.BackendType != "SVR2AI")
             _report.Degrade("声库后端", owner, 1,
-                $"backendType=\"{database.BackendType}\"：OpenCyan 只挂 AI 四模型链路，Standard 声库工程需改选对应的 AI 声库才能渲染");
+                $"backendType=\"{database.BackendType}\"：本包面向的歌声引擎只挂 AI 四模型链路，Standard 声库工程需改选对应的 AI 声库才能渲染");
 
         if (OpenCyanParams.IsClfLanguage(database.Language))
             properties[OpenCyanParams.KeyPartLanguage] = PropertyValue.Create(database.Language);
@@ -166,7 +166,7 @@ public sealed class SvpImporter
         if (track.MainRef.BlickOffset != 0)
             _report.Degrade("坐标", owner, 1,
                 $"mainRef.blickOffset={track.MainRef.BlickOffset}：位置已按绝对时间展开，但引擎侧「非零 offset 下的参数曲线坐标变换」尚未闭合，"
-                + "这份工程交给 OpenCyan 渲染仍会被拒");
+                + "这份工程交给歌声引擎渲染仍会被拒");
 
         // Vocal Mode：静态权重（voice.vocalModeParams，界面百分数）在宿主侧只有一个「声线」单选，
         // 取权重最大的一条；其余静态权重与逐声线曲线走 properties[xsy_mix] 的库内混合通道。
@@ -317,7 +317,7 @@ public sealed class SvpImporter
         }
 
         if (attributes.ExprGroup is { Length: > 0 })
-            _report.Degrade("表情组", owner, 1, "exprGroup（原版按音高命名的表情组）在 OpenCyan 无对应通道");
+            _report.Degrade("表情组", owner, 1, "exprGroup（原版按音高命名的表情组）没有对应的参数通道");
         if (attributes.Alt is { Count: > 0 })
             _report.Degrade("ALT 组", owner, 1,
                 "alt[] 要与 CLF 最终音素逐项等长，而真实文件里它与 dur[] 长度互不相同（语料实测 648/3457 处不自洽），无法可靠搬运");
@@ -351,7 +351,7 @@ public sealed class SvpImporter
             var spec = OpenCyanParams.TrackFor(name);
             if (spec is null)
             {
-                _report.Degrade("参数曲线", owner, 1, $"{name}：OpenCyan 没有这条轨，曲线被丢弃");
+                _report.Degrade("参数曲线", owner, 1, $"{name}：当前声源没有声明这条轨，曲线被丢弃");
                 continue;
             }
 

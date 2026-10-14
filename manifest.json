@@ -3,7 +3,7 @@
   "name": "SynthesizerV Format Support",
   "version": "0.1.0",
   "author": "Daisium",
-  "description": "为 OpenCyan 参数体系提供 Synthesizer V 工程格式（.svp）的导入/导出。纯 C# 实现，参数映射到 OpenCyan 参数体系。",
+  "description": "为配套 AI 歌声插件的参数体系提供 Synthesizer V 工程格式（.svp）的导入 / 导出。纯 C# 实现，参数映射到该插件声明的轨与属性。",
   "sdk-version": "1.0",
   "extensions": [
     {
