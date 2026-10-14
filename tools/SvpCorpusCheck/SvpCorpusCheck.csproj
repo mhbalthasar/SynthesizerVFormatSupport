@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- 语料校验探针：只编译格式包里「读侧」需要的源文件，批量吃真实 .svp，打印规模、降级清单与导入结果。
+       与主工程同一套 SDK 引用口径（宿主 DLL 由 SDKPath 提供，不打进包）。 -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>SvpCorpusCheck</AssemblyName>
+    <RootNamespace>SvpCorpusCheck</RootNamespace>
+    <OutputType>Exe</OutputType>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <SDKPath Condition="'$(SDKPath)' == ''">$(MSBuildThisFileDirectory)..\..\..\TuneLab2</SDKPath>
+    <PackageRoot>$(MSBuildThisFileDirectory)..\..\</PackageRoot>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="$(PackageRoot)src\Model\*.cs" />
+    <Compile Include="$(PackageRoot)src\Common\*.cs" />
+    <Compile Include="$(PackageRoot)src\Reader\*.cs" />
+    <Compile Include="$(PackageRoot)src\Writer\*.cs" />
+    <Compile Include="$(PackageRoot)src\Mapping\*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 探针是独立 exe，宿主不在旁边 ⇒ SDK 程序集必须拷进输出目录（Private=true）。 -->
+    <ProjectReference Include="$(SDKPath)\TuneLab.Foundation\TuneLab.Foundation.csproj">
+      <Private>true</Private>
+    </ProjectReference>
+    <ProjectReference Include="$(SDKPath)\TuneLab.SDK\TuneLab.SDK.csproj">
+      <Private>true</Private>
+    </ProjectReference>
+  </ItemGroup>
+
+</Project>

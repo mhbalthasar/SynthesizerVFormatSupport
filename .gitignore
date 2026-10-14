@@ -1,0 +1,16 @@
+# Build output
+bin/
+obj/
+
+# IDE / user files
+.vs/
+*.user
+*.suo
+*.userprefs
+
+# OS cruft
+Thumbs.db
+Desktop.ini
+
+/packages
+*.tlx

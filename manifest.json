@@ -1,0 +1,18 @@
+{
+  "id": "com.daisium.synthesizervformatsupport",
+  "name": "SynthesizerV Format Support",
+  "version": "0.1.0",
+  "author": "Daisium",
+  "description": "为 OpenCyan 参数体系提供 Synthesizer V 工程格式（.svp）的导入/导出。纯 C# 实现，参数映射到 OpenCyan 参数体系。",
+  "sdk-version": "1.0",
+  "extensions": [
+    {
+      "type": "format",
+      "suffixes": ["svp"],
+      "name": "Synthesizer V SVP",
+      "introduction": "Introduction.md",
+      "class": "SynthesizerVFormatSupport.SvpFormat",
+      "assembly": "SynthesizerVFormatSupport.dll"
+    }
+  ]
+}
