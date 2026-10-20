@@ -132,6 +132,16 @@ static void ImportAndSummarize(SvpProject project, string path, bool openCyan)
 
     Console.WriteLine($"  导入({(openCyan ? "OpenCyan" : "无插件")}) → tracks={imported.Tracks.Count} parts={parts} notes={notes} " +
         $"vibratos={vibratos} 曲线点={curvePoints} 音高线点={pitchPoints} 声库键缺失={missingVoice}");
+    var pitchDetail = imported.Tracks.SelectMany(t => t.Parts.OfType<MidiPartInfo>())
+        .Where(p => p.Pitch.Segments.Count > 0)
+        .Select(p => $"{p.Name}:{p.Pitch.Segments.Count}段/{p.Pitch.Segments.Sum(s => s.Count)}点");
+    if (pitchDetail.Any())
+        Console.WriteLine($"  音高分段=[{string.Join(", ", pitchDetail)}]");
+    // 回归哨兵：段内连奏边界必须有「左极限 + 右极限」两个采样点，否则宿主 Hermite 会把
+    // 整颗音符插成滑向下一颗音高的滑音（45:3 那次跑调就是这条）。
+    int ramps = imported.Tracks.SelectMany(t => t.Parts.OfType<MidiPartInfo>()).Sum(CountRampBoundaries);
+    if (ramps > 0)
+        Console.WriteLine($"  [warn] 连奏边界缺采样点 {ramps} 处（音高会在音符内部滑音）");
     Console.WriteLine($"  轨键=[{string.Join(", ", trackKeys)}]");
     Console.WriteLine($"  tempos={imported.Tempos.Count} meters={imported.TimeSignatures.Count} | {report.Summary()}");
     // —— 导出回环：ProjectInfo → SVP → 字节 → 再读，规模必须与导入前同量级 ——
@@ -142,8 +152,11 @@ static void ImportAndSummarize(SvpProject project, string path, bool openCyan)
     var bytes = memory.ToArray();
     var reimport = new SvpImporter(ReparseCanonical(bytes), new ImportReport()).Import();
     int exportedNotes = reimport.Tracks.Sum(t => t.Parts.OfType<MidiPartInfo>().Sum(p => p.Notes.Count));
+    int reimportPitch = reimport.Tracks.Sum(t => t.Parts.OfType<MidiPartInfo>()
+        .Sum(p => p.Pitch.Segments.Sum(s => s.Count)));
     Console.WriteLine($"  导出 → {bytes.Length / 1024} KB、tracks={exported.Tracks.Count}、notes={exported.Tracks.Sum(t => t.MainGroup.Notes.Count)}"
-        + $" | 再导入 notes={exportedNotes} vs {notes}（差 = 伴奏轨与合并 part 的宿主侧再展开）| {exportReport.Summary()}");
+        + $" | 再导入 notes={exportedNotes} vs {notes}（差 = 伴奏轨与合并 part 的宿主侧再展开）"
+        + $" 音高线点={reimportPitch} | {exportReport.Summary()}");
 
     var dump = Environment.GetEnvironmentVariable("SVPDUMP");
     if (!string.IsNullOrEmpty(dump))
@@ -162,8 +175,32 @@ static void ImportAndSummarize(SvpProject project, string path, bool openCyan)
     }
 }
 
-static byte[] Canonical(SvpProject project)
+static int CountRampBoundaries(MidiPartInfo part)
 {
+    var notes = part.Notes.OrderBy(n => n.Pos).ToList();
+    if (notes.Count < 2 || part.Pitch.Segments.Count == 0) return 0;
+
+    int count = 0;
+    for (int i = 0; i + 1 < notes.Count; i++)
+    {
+        var a = notes[i];
+        var b = notes[i + 1];
+        if (Math.Abs(a.Pos + a.Dur - b.Pos) > 0.5 || a.Pitch == b.Pitch) continue;
+
+        double t = b.Pos;
+        foreach (var segment in part.Pitch.Segments)
+        {
+            if (segment.Count == 0 || t <= segment[0].X || t >= segment[^1].X) continue;
+            bool hasRight = segment.Any(p => Math.Abs(p.X - t) <= 1e-3);
+            bool hasLeft = segment.Any(p => p.X < t && t - p.X <= 1e-3);
+            if (!hasRight || !hasLeft) count++;
+            break;
+        }
+    }
+    return count;
+}
+
+static byte[] Canonical(SvpProject project){
     using var stream = new MemoryStream();
     SvpWriter.Write(stream, project);
     return stream.ToArray();

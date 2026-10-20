@@ -25,15 +25,17 @@ public static class PitchGeometry
     /// <param name="includeOpenCyanChannels">false = 没装 OpenCyan：只落音高线（pitchDelta /
     /// detune / 轨道移调），颤音对象与 VibratoEnvelope 轨都跳过——它们靠宿主的 PitchDeviation
     /// 通道进引擎，没有该引擎时写进去就是无人消费的孤儿数据。</param>
+    /// <param name="options">音高线的两个判定阈值；null = 默认值（1 音分 / 1 个四分音符）。</param>
     public static void Apply(SvpTrack track, IReadOnlyList<SvpNote> notes, TempoMap tempo,
                              ImportReport report, string owner, MidiPartInfo part,
-                             bool includeOpenCyanChannels = true)
+                             bool includeOpenCyanChannels = true, ImportOptions? options = null)
     {
+        options ??= new ImportOptions();
         double globalTransposeCents = (track.MainRef.Voice.TransposeCents ?? 0)
                                     + (track.MainRef.Voice.TransposeSemitones ?? 0) * 100.0;
 
         var curve = track.MainGroup.Parameters.GetValueOrDefault("pitchDelta") ?? new SvpAutomation();
-        BuildPitchCurve(track, notes, tempo, curve, globalTransposeCents, part, report, owner);
+        BuildPitchCurve(track, notes, tempo, curve, globalTransposeCents, part, report, owner, options);
         if (!includeOpenCyanChannels) return;
         ApplyVibratoEnvelope(track, part, report, owner);
         ImportManualVibratos(track, notes, tempo, owner, part, report);
@@ -42,71 +44,186 @@ public static class PitchGeometry
 
     // ── Pitch 曲线 ──
 
+    /// `pitchDelta` 是**相对引擎自动音高**的偏差（音分），0 的含义是「不修改、让引擎自己唱」，
+    /// 不是「唱成十二平均律」。所以只有真正偏离 0 的编辑段才烘焙成绝对音高；0 段一个点都不给
+    /// （宿主侧 NaN = 引擎自由发挥）。旧实现按「首个锚点 → 末个锚点」整段填充，会把两个相隔
+    /// 40 小节的小编辑之间的空白全部钉成标称音高，是跑调的直接来源。
+    /// 「多小算 0」「多长的空档要断段」由 <see cref="ImportOptions"/> 从设置面板取。
+
+    /// 单个锚点的孤岛向两侧各补这么多，让曲线以「回到 0」收尾；
+    /// 相邻锚点比这更近时直接用那颗锚点。
+    const long PitchIslandMarginBlick = 88_200_000;   // 1/8 四分音符
+
     static void BuildPitchCurve(SvpTrack track, IReadOnlyList<SvpNote> notes, TempoMap tempo,
                                 SvpAutomation curve, double globalTransposeCents,
-                                MidiPartInfo part, ImportReport report, string owner)
+                                MidiPartInfo part, ImportReport report, string owner,
+                                ImportOptions options)
     {
         bool hasDetune = notes.Any(n => n.Detune != 0);
-        if (curve.Points.Count == 0 && !hasDetune && Math.Abs(globalTransposeCents) < 1e-9)
+        bool hasTranspose = Math.Abs(globalTransposeCents) > 1e-9;
+        if (curve.Points.Count == 0 && !hasDetune && !hasTranspose)
             return;
 
-        // 采样位置 = 曲线原有锚点 ∪ 每颗音符的起止（标称音高在音符边界跳变，必须显式给点，
-        // 否则宿主会在两颗音符之间插出一条不存在的斜线）。
-        var positions = new SortedSet<long>();
-        foreach (var point in curve.Points) positions.Add(point.Blick);
-        if (curve.Points.Count > 0)
-            for (int i = 1; i < curve.Points.Count; i++)
-            {
-                // 线性模式的锚点之间补中点：宿主是 Hermite，直线会被插成鼓包。
-                if (curve.Mode != SvpInterpolationMode.Linear) break;
-                long a = curve.Points[i - 1].Blick, b = curve.Points[i].Blick;
-                positions.Add(a + (b - a) / 2);
-            }
-        foreach (var note in notes)
+        var spans = new List<PitchSpan>();
+        CollectCurveSpans(curve, spans, options.PitchEditEpsilonCents, options.ZeroGapSplitBlick);
+        if (hasDetune)
+            foreach (var note in notes)
+                if (note.Detune != 0 && note.Duration > 1)
+                    spans.Add(new PitchSpan(note.Onset, note.End - 1));
+        if (hasTranspose && notes.Count > 0)
+            spans.Add(new PitchSpan(notes[0].Onset, Math.Max(notes[0].Onset, notes.Max(n => n.End) - 1)));
+
+        foreach (var span in MergeSpans(spans))
         {
-            positions.Add(note.Onset);
-            positions.Add(note.End);
+            var line = SampleSpan(span, track, notes, curve, globalTransposeCents);
+            if (line.Count == 0) continue;
+            // 单点折线在宿主里只是一个孤立锚点；补一个同值点让它至少是一小段。
+            if (line.Count == 1) line.Add(new Point(line[0].X + 1, line[0].Y));
+            part.Pitch.Segments.Add(line);
         }
 
-        long spanStart = curve.Points.Count > 0 ? curve.Points[0].Blick : long.MinValue;
-        long spanEnd = curve.Points.Count > 0 ? curve.Points[^1].Blick : long.MaxValue;
+        if (hasDetune || hasTranspose)
+            report.Degrade("音分精度", owner, 1,
+                "detune / 轨道移调已并入绘制的音高线；宿主按 MIDI 浮点存储，音分级精度低于原字段");
+    }
 
-        var points = new List<Point>();
-        foreach (long blick in positions)
+    readonly record struct PitchSpan(long Start, long End);
+
+    /// 从 `pitchDelta` 里切出「用户真的画了偏差」的区间。
+    /// 每个区间会多带一颗相邻的 0 锚点（如果离得够近），让曲线在切口处平滑回到 0；
+    /// 离得远的 0 锚点属于另一片空白，拉进来就等于把空白重新钉成标称音高。
+    static void CollectCurveSpans(SvpAutomation curve, List<PitchSpan> spans,
+                                  double epsilonCents, long zeroGapSplitBlick)
+    {
+        var points = curve.Points;
+        int index = 0;
+        while (index < points.Count)
         {
-            // 没有 delta 曲线时，只在「有 detune 的音符内」和「全曲移调」这两件事上给值：
-            // 曲线处处覆盖会把引擎自己的音高（含滑音、语调）整条抹平，那是不可逆的破坏。
-            if (curve.Points.Count == 0)
+            if (Math.Abs(points[index].Value) <= epsilonCents)
             {
-                var note = FindNote(notes, blick);
-                bool insideDetuned = note is not null && note.Detune != 0 && blick >= note.Onset && blick < note.End;
-                if (!insideDetuned && Math.Abs(globalTransposeCents) < 1e-9) continue;
-                if (Math.Abs(globalTransposeCents) < 1e-9 && blick >= note!.End) continue;
-            }
-            else if (blick < spanStart || blick > spanEnd)
-            {
+                index++;
                 continue;
             }
 
-            double deltaCents = curve.Evaluate(blick, 0.0);
-            double nominal = NominalPitchAt(notes, blick);
-            if (nominal <= 0) continue;
+            int firstActive = index;
+            int lastActive = index;
+            int cursor = index + 1;
+            while (cursor < points.Count)
+            {
+                if (Math.Abs(points[cursor].Value) > epsilonCents)
+                {
+                    lastActive = cursor;
+                    cursor++;
+                    continue;
+                }
 
-            double detune = DetuneAt(notes, blick);
-            double value = nominal + (deltaCents + detune + globalTransposeCents) / 100.0;
-            points.Add(new Point(
-                TempoMap.BlickToTick(blick + track.MainRef.BlickOffset),
-                Math.Clamp(value, 0.0, OpenCyanParams.MaxMidiNote)));
+                // 一段 delta == 0 的空档：只有「长时间没动过」才把它切成两段。
+                int zeroStart = cursor;
+                while (cursor < points.Count && Math.Abs(points[cursor].Value) <= epsilonCents)
+                    cursor++;
+                if (cursor >= points.Count) break;
+                if (points[cursor].Blick - points[zeroStart - 1].Blick >= zeroGapSplitBlick) break;
+                lastActive = cursor;
+                cursor++;
+            }
+
+            int from = firstActive;
+            while (from > 0
+                   && points[from].Blick - points[from - 1].Blick <= PitchIslandMarginBlick
+                   && Math.Abs(points[from - 1].Value) <= epsilonCents)
+                from--;
+            int to = lastActive;
+            while (to + 1 < points.Count
+                   && points[to + 1].Blick - points[to].Blick <= PitchIslandMarginBlick
+                   && Math.Abs(points[to + 1].Value) <= epsilonCents)
+                to++;
+
+            long start = points[from].Blick;
+            long end = points[to].Blick;
+            if (from == to)
+            {
+                start = Math.Max(0, start - PitchIslandMarginBlick);
+                end += PitchIslandMarginBlick;
+            }
+            spans.Add(new PitchSpan(start, end));
+
+            index = lastActive + 1;
+        }
+    }
+
+    static List<PitchSpan> MergeSpans(List<PitchSpan> spans)
+    {
+        if (spans.Count == 0) return spans;
+        spans.Sort((a, b) => a.Start.CompareTo(b.Start));
+        var merged = new List<PitchSpan> { spans[0] };
+        for (int i = 1; i < spans.Count; i++)
+        {
+            var span = spans[i];
+            var last = merged[^1];
+            if (span.Start <= last.End + 1)
+                merged[^1] = new PitchSpan(last.Start, Math.Max(last.End, span.End));
+            else
+                merged.Add(span);
+        }
+        return merged;
+    }
+
+    /// 采样一段区间：曲线锚点（线性模式补中点）∪ 每颗音符的起点 / 终点**左极限**。
+    ///
+    /// 终点必须取 `End - 1` 而不是 `End`：连奏时 `End == 下一颗.Onset`，`NominalPitchAt`
+    /// 在边界上取到的是**下一颗**的音高；若在同一位置只留一个点，宿主就会把整颗音符
+    /// 从自己的音高一路滑到下一颗的音高（Hermite）。`End - 1` 与下一颗的 `Onset`
+    /// 相差 1 BLICK（微秒级），标称音高在这里才是真正「跳变」。
+    static List<Point> SampleSpan(PitchSpan span, SvpTrack track, IReadOnlyList<SvpNote> notes,
+                                   SvpAutomation curve, double globalTransposeCents)
+    {
+        var samples = new SortedDictionary<long, double>();
+
+        void Add(long blick)
+        {
+            double nominal = NominalPitchAt(notes, blick);
+            if (nominal <= 0) return;
+            double cents = (curve.Points.Count > 0 ? curve.Evaluate(blick, 0.0) : 0.0)
+                         + DetuneAt(notes, blick) + globalTransposeCents;
+            samples[blick] = nominal + cents / 100.0;
         }
 
-        if (points.Count == 0) return;
-        if (points.Count == 1)
-            points.Add(new Point(points[0].X + 1, points[0].Y));
+        // 区间两端必须有采样点：孤锚点扩出来的 ±1/8 四分音符里可能既没有别的锚点、
+        // 也没有音符边界，不补的话这段就只剩一个点。
+        Add(span.Start);
+        Add(span.End);
 
-        part.Pitch.Segments.Add(points);
-        if (hasDetune || Math.Abs(globalTransposeCents) > 1e-9)
-            report.Degrade("音分精度", owner, 1,
-                "detune / 轨道移调已并入绘制的音高线；宿主按 MIDI 浮点存储，音分级精度低于原字段");
+        for (int i = 0; i < curve.Points.Count; i++)
+        {
+            var point = curve.Points[i];
+            if (point.Blick < span.Start || point.Blick > span.End) continue;
+            Add(point.Blick);
+
+            // 线性模式的锚点之间补中点：宿主是 Hermite，直线会被插成鼓包。
+            if (curve.Mode == SvpInterpolationMode.Linear && i + 1 < curve.Points.Count)
+            {
+                long next = curve.Points[i + 1].Blick;
+                long middle = point.Blick + (next - point.Blick) / 2;
+                if (middle > point.Blick && middle < span.End) Add(middle);
+            }
+        }
+
+        foreach (var note in notes)
+        {
+            if (note.End < span.Start) continue;
+            if (note.Onset > span.End) break;
+
+            if (note.Onset >= span.Start) Add(note.Onset);
+            long left = note.End - 1;
+            if (left > note.Onset && left >= span.Start && left <= span.End) Add(left);
+        }
+
+        if (samples.Count == 0) return new List<Point>();
+        return samples
+            .Select(kv => new Point(
+                TempoMap.BlickToTick(kv.Key + track.MainRef.BlickOffset),
+                Math.Clamp(kv.Value, 0.0, OpenCyanParams.MaxMidiNote)))
+            .ToList();
     }
 
     /// 标称音高：取覆盖该位置的音符；落在音符间隙时取**最近**的一颗（引擎在间隙里也用邻近音符的
@@ -131,11 +248,14 @@ public static class PitchGeometry
         return note is not null && blick >= note.Onset && blick < note.End ? note.Detune : 0;
     }
 
+    /// 取覆盖该位置的音符。`SearchLowerBound` 返回的是**第一颗 onset > blick** 的下标，
+    /// 所以覆盖 blick 的音符在 `index - 1`（onset 永远不可能同时 > blick 又 <= blick）；
+    /// 旧实现只看 `index`，恒为 null ⇒ `notes[].detune` 从未真正生效。
     static SvpNote? FindNote(IReadOnlyList<SvpNote> notes, long blick)
     {
         int index = SearchLowerBound(notes, blick);
-        if (index < notes.Count && notes[index].Onset <= blick && blick < notes[index].End)
-            return notes[index];
+        if (index > 0 && blick < notes[index - 1].End)
+            return notes[index - 1];
         return null;
     }
 

@@ -16,13 +16,25 @@ BPM 折算，跨变速点的位置由 tempo 表分段积分。
 | --- | --- |
 | `parameters.loudness / tension / breathiness / voicing / gender / toneShift` | 力度、张力、气声、声门混合、性别、移调轨（含各自的量程与中性点换算） |
 | `parameters.growl / growlRate / distortion / aspiration` | 嘶吼强度、嘶吼速率、失真、气声权重轨（目标插件的扩展轨，真实 SynthV 不写这些） |
-| `parameters.pitchDelta`（音分） | 绘制的音高线：`Y = 覆盖该处的标称 MIDI + delta/100` |
+| `parameters.pitchDelta`（音分） | 绘制的音高线：`Y = 覆盖该处的标称 MIDI + delta/100`。只在偏差大于「音高编辑阈值」的编辑段落地，每段单独成折线，段间留空交回引擎 predict |
 | `parameters.vibratoEnv` × `voice.dF0VbrMod` | 宿主内置的颤音包络轨（同为乘性包络，0..2、默认 1） |
 | 音符级手动颤音 `dF0Vbr / fF0Vbr / pF0Vbr / tF0VbrStart / Left / Right` | 宿主颤音对象（峰值 = depth×0.5、相位 = −φ/π、淡入淡出走 Attack/Release） |
 | `mainGroup.vocalModes.<声线>` 曲线 | part 的音色混合条目（库内通道）+ 该条目自动生成的内容寻址混合比轨 |
 | `voice.vocalModeParams`（界面百分数） | part 的「渲染声线」单选（取权重最大的一条） |
 | `notes[].phonemes` / `languageOverride` + `phonesetOverride` / rap 的 `accent`、`rTone`、`rIntonation` | 音符属性：显式音素、语言覆盖、音乐类型、声调、说唱音高与音准 |
 | `mainRef.database.{name,version,language}` | 声源身份（Type = 目标插件注册的引擎 id，Id = 由库名 + 版本 + 语言算出的声库身份键）；原始三元组另存 part 私有属性 `svp_identity` 供导出回填 |
+
+## 设置
+
+设置面板里有两项**只影响导入**的音高参数：
+
+| 设置项 | 默认 | 含义 |
+| --- | --- | --- |
+| 音高编辑阈值（音分） | 1 | `pitchDelta` 锚点的绝对值不超过该值就算「用户没编辑」，不产出音高线。调小 = 更积极地把微小偏差也烘焙进去。 |
+| 音高空档断段（四分音符） | 1 | 两段编辑之间若隔着这么长的零偏差空档，就切成两条独立折线，段间留空交回引擎 predict。调大 = 保留更长的连续段。 |
+
+默认值对语料里的真实工程都成立。注意这两项是**导入时**生效，改完要重新导入 `.svp`
+（已导入的工程不会回溯改写）。
 
 ## 没装目标插件时
 
@@ -49,6 +61,9 @@ part 私有属性 `svp_identity` 照常写：它是溯源信息，装了插件�
 - 伴奏轨（`isInstrumental` + `audio`）不导入音频——格式插件只拿到数据流，拿不到 `.svp`
   所在目录，写相对路径必然指错。
 - 非零 `mainRef.blickOffset` 已按绝对位置展开，但引擎侧对该形态的参数曲线坐标变换尚未闭合。
+- `parameters.pitchDelta` 是**相对引擎自动音高**的偏差，宿主只有绝对音高通道：导入按
+  「标称音高 + 偏差」烘焙，因此手绘段之外的自然音准/滑音仍由引擎临时预测；跨音符边界
+  靠 1 BLICK 的阶跃采样保证音高在边界跳变而不是整颗音符滑过去。
 
 ## 导出
 

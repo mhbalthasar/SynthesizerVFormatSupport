@@ -15,6 +15,7 @@ namespace SynthesizerVFormatSupport;
 public sealed class SvpFormat : IImportFormat, IExportFormat, IExtensionSettings
 {
     ExportOptions _options = new();
+    ImportOptions _importOptions = new();
 
     public ProjectInfo Deserialize(Stream stream)
     {
@@ -23,7 +24,8 @@ public sealed class SvpFormat : IImportFormat, IExportFormat, IExtensionSettings
         // 检测结果不落日志：装了没有、检查过没检查过都是用户环境的隐私细节，
         // 而且它对本包的正确性没有任何信息量（缺失的后果已经写在下面那条「导入范围」里）。
         var (installed, _) = OpenCyanPresence.Detect();
-        var info = new SvpImporter(project, report, openCyanAvailable: installed).Import();
+        var info = new SvpImporter(project, report, openCyanAvailable: installed, importOptions: _importOptions)
+            .Import();
         report.Log();
         return info;
     }
@@ -39,6 +41,7 @@ public sealed class SvpFormat : IImportFormat, IExportFormat, IExtensionSettings
     public ObjectConfig GetSettingsConfig(IExtensionSettingsContext context)
     {
         var current = ExportOptions.FromSettings(context.Settings);
+        var import = ImportOptions.FromSettings(context.Settings);
         var props = new OrderedMap<PropertyKey, IControllerConfig>();
         props.Add((ExportOptions.KeyBankName, "导出默认声库名"),
             TextBoxConfig.Create(current.BankName));
@@ -53,8 +56,25 @@ public sealed class SvpFormat : IImportFormat, IExportFormat, IExtensionSettings
         var match = items.FirstOrDefault(i => i.Language == current.BankLanguage);
         var selected = string.IsNullOrEmpty(match.Language) ? items[0].Item : match.Item;
         props.Add((ExportOptions.KeyBankLanguage, "导出默认声库语言"), combo.WithDefault(selected));
+
+        // 导入侧：音高线的两个判定阈值（默认 1 音分 / 1 个四分音符，语料里的真实工程都成立）。
+        // 只影响「哪些 pitchDelta 段落转成绝对音高」，不影响音符与其它参数。
+        props.Add((ImportOptions.KeyPitchEditEpsilonCents, "音高编辑阈值（音分）"),
+            DraggableNumberBoxConfig.Create(import.PitchEditEpsilonCents)
+                .WithRange(ImportOptions.MinPitchEditEpsilonCents, ImportOptions.MaxPitchEditEpsilonCents)
+                .WithStep(0.1)
+                .WithFormat(NumberFormat.Decimals(1)));
+        props.Add((ImportOptions.KeyZeroGapSplitQuarters, "音高空档断段（四分音符）"),
+            DraggableNumberBoxConfig.Create(import.ZeroGapSplitQuarters)
+                .WithRange(ImportOptions.MinZeroGapSplitQuarters, ImportOptions.MaxZeroGapSplitQuarters)
+                .WithStep(0.25)
+                .WithFormat(NumberFormat.Decimals(2)));
         return ObjectConfig.Create(props);
     }
 
-    public void ApplySettings(PropertyObject settings) => _options = ExportOptions.FromSettings(settings);
+    public void ApplySettings(PropertyObject settings)
+    {
+        _options = ExportOptions.FromSettings(settings);
+        _importOptions = ImportOptions.FromSettings(settings);
+    }
 }

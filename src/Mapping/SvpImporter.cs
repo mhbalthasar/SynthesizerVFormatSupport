@@ -26,12 +26,17 @@ public sealed class SvpImporter
     /// 就没有宿主轨可挂，写进去只会得到一堆指向缺失引擎的孤儿数据。
     readonly bool _openCyan;
 
-    public SvpImporter(SvpProject project, ImportReport report, bool openCyanAvailable = true)
+    /// 音高线的两个判定阈值（设置面板可调）。
+    readonly ImportOptions _importOptions;
+
+    public SvpImporter(SvpProject project, ImportReport report, bool openCyanAvailable = true,
+                       ImportOptions? importOptions = null)
     {
         _project = project;
         _report = report;
         _tempo = new TempoMap(project.Time.Tempo);
         _openCyan = openCyanAvailable;
+        _importOptions = importOptions ?? new ImportOptions();
         if (!_openCyan)
             _report.Degrade("导入范围", "工程", 1,
                 "本次仅导入拍速 / 拍号 / 轨道 / 音符 / 音高线：音色轨、颤音、音色混合、"
@@ -121,7 +126,7 @@ public sealed class SvpImporter
 
         if (_openCyan)
             ImportTimbreCurves(track, owner, part, properties);
-        PitchGeometry.Apply(track, notes, _tempo, _report, owner, part, includeOpenCyanChannels: _openCyan);
+        PitchGeometry.Apply(track, notes, _tempo, _report, owner, part, _openCyan, _importOptions);
 
         if (properties.Count > 0)
             part.Properties = new PropertyObject(properties);
